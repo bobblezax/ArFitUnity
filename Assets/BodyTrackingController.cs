@@ -1,10 +1,11 @@
+using System.Collections;
 using System.Collections.Generic;
 using Unity.Collections;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
 
-// Enum for ARKit/ARCore joint indices (expanded to include all joints from BodyTrackingController)
+// Enum for ARKit/ARCore joint indices
 public enum JointIndices3D
 {
     Hips = 0,
@@ -28,12 +29,16 @@ public enum JointIndices3D
 }
 
 [RequireComponent(typeof(ARHumanBodyManager))]
-public class HumanBodyTracking : MonoBehaviour
+public class BodyTrackingController : MonoBehaviour
 {
     [Header("References")]
     [SerializeField]
     [Tooltip("The ARHumanBodyManager which will produce frame events.")]
     private ARHumanBodyManager humanBodyManager;
+
+    [SerializeField]
+    [Tooltip("The ARCameraManager to control camera facing direction.")]
+    private ARCameraManager cameraManager;
 
     [SerializeField]
     [Tooltip("The Animator component of the rigged avatar.")]
@@ -44,6 +49,11 @@ public class HumanBodyTracking : MonoBehaviour
     private float positionLerpSpeed = 5f;
     [SerializeField]
     private float rotationLerpSpeed = 5f;
+
+    [Header("Front Camera Adjustments")]
+    [SerializeField]
+    [Tooltip("Apply mirroring correction for front-facing camera (flips left-right).")]
+    private bool applyMirroringCorrection = true;
 
     // Cache bone transforms for performance
     private Dictionary<HumanBodyBones, Transform> boneCache;
@@ -71,6 +81,8 @@ public class HumanBodyTracking : MonoBehaviour
         { JointIndices3D.RightFoot, HumanBodyBones.RightFoot }
     };
 
+    private bool isCameraInitialized;
+
     void Awake()
     {
         // Initialize humanBodyManager
@@ -80,6 +92,18 @@ public class HumanBodyTracking : MonoBehaviour
             Debug.LogError("ARHumanBodyManager component is missing!", this);
             enabled = false;
             return;
+        }
+
+        // Validate cameraManager
+        if (cameraManager == null)
+        {
+            cameraManager = FindObjectOfType<ARCameraManager>();
+            if (cameraManager == null)
+            {
+                Debug.LogError("ARCameraManager not found in scene!", this);
+                enabled = false;
+                return;
+            }
         }
 
         // Validate avatarAnimator
@@ -106,6 +130,12 @@ public class HumanBodyTracking : MonoBehaviour
         }
     }
 
+    void Start()
+    {
+        // Start coroutine to ensure front-facing camera is set
+        StartCoroutine(TrySetFrontFacingCamera());
+    }
+
     void OnEnable()
     {
         if (humanBodyManager != null)
@@ -120,10 +150,57 @@ public class HumanBodyTracking : MonoBehaviour
         {
             humanBodyManager.humanBodiesChanged -= OnHumanBodiesChanged;
         }
+        StopAllCoroutines();
+    }
+
+    IEnumerator TrySetFrontFacingCamera()
+    {
+        // Wait until AR subsystem is initialized
+        while (cameraManager != null && cameraManager.subsystem == null)
+        {
+            Debug.Log("Waiting for ARCameraManager subsystem to initialize...");
+            yield return new WaitForSeconds(0.1f);
+        }
+
+        if (cameraManager == null || cameraManager.subsystem == null)
+        {
+            Debug.LogError("ARCameraManager or subsystem not available. Cannot set front-facing camera.", this);
+            isCameraInitialized = false;
+            yield break;
+        }
+
+        // Check if front-facing camera is set
+        if (cameraManager.currentFacingDirection != CameraFacingDirection.User)
+        {
+            cameraManager.requestedFacingDirection = CameraFacingDirection.User;
+            Debug.Log("Requested front-facing camera.");
+        }
+        else
+        {
+            Debug.Log("Front-facing camera already set.");
+        }
+
+        // Verify the current facing direction
+        yield return new WaitForSeconds(0.5f); // Wait for subsystem to apply change
+        if (cameraManager.currentFacingDirection != CameraFacingDirection.User)
+        {
+            Debug.LogWarning($"Failed to set front-facing camera. Current facing: {cameraManager.currentFacingDirection}. Device may not support front-facing body tracking.", this);
+        }
+        else
+        {
+            Debug.Log("Front-facing camera successfully set.");
+        }
+
+        isCameraInitialized = true;
     }
 
     void OnHumanBodiesChanged(ARHumanBodiesChangedEventArgs eventArgs)
     {
+        if (!isCameraInitialized)
+        {
+            return; // Skip updates until camera is initialized
+        }
+
         foreach (ARHumanBody humanBody in eventArgs.added)
         {
             UpdateBody(humanBody);
@@ -139,6 +216,7 @@ public class HumanBodyTracking : MonoBehaviour
     {
         if (body == null || (body.trackingState != TrackingState.Tracking && body.trackingState != TrackingState.Limited) || !body.joints.IsCreated)
         {
+            Debug.Log("No valid body tracking data.");
             return;
         }
 
@@ -149,8 +227,18 @@ public class HumanBodyTracking : MonoBehaviour
         {
             float positionLerp = 1f - Mathf.Exp(-positionLerpSpeed * Time.deltaTime);
             float rotationLerp = 1f - Mathf.Exp(-rotationLerpSpeed * Time.deltaTime);
-            transform.position = Vector3.Lerp(transform.position, joints[(int)JointIndices3D.Hips].anchorPose.position, positionLerp);
-            transform.rotation = Quaternion.Slerp(transform.rotation, joints[(int)JointIndices3D.Hips].anchorPose.rotation, rotationLerp);
+            Vector3 targetPosition = joints[(int)JointIndices3D.Hips].anchorPose.position;
+            Quaternion targetRotation = joints[(int)JointIndices3D.Hips].anchorPose.rotation;
+
+            // Apply mirroring correction for front-facing camera
+            if (applyMirroringCorrection && cameraManager.currentFacingDirection == CameraFacingDirection.User)
+            {
+                targetPosition.x = -targetPosition.x; // Mirror horizontally
+                targetRotation = Quaternion.Euler(targetRotation.eulerAngles.x, 180f - targetRotation.eulerAngles.y, targetRotation.eulerAngles.z); // Flip Y rotation
+            }
+
+            transform.position = Vector3.Lerp(transform.position, targetPosition, positionLerp);
+            transform.rotation = Quaternion.Slerp(transform.rotation, targetRotation, rotationLerp);
         }
 
         // Update each bone based on AR joint data
@@ -175,6 +263,13 @@ public class HumanBodyTracking : MonoBehaviour
         XRHumanBodyJoint arJoint = joints[jointIndex];
         Vector3 targetPosition = arJoint.anchorPose.position;
         Quaternion targetRotation = arJoint.anchorPose.rotation;
+
+        // Apply mirroring correction for front-facing camera
+        if (applyMirroringCorrection && cameraManager.currentFacingDirection == CameraFacingDirection.User)
+        {
+            targetPosition.x = -targetPosition.x; // Mirror horizontally
+            targetRotation = Quaternion.Euler(targetRotation.eulerAngles.x, 180f - targetRotation.eulerAngles.y, targetRotation.eulerAngles.z); // Flip Y rotation
+        }
 
         // Apply smoothed transformations
         float positionLerp = 1f - Mathf.Exp(-positionLerpSpeed * Time.deltaTime);
