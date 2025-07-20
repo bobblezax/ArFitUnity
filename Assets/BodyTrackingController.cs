@@ -1,131 +1,185 @@
 using System.Collections.Generic;
+using Unity.Collections;
 using UnityEngine;
 using UnityEngine.XR.ARFoundation;
 using UnityEngine.XR.ARSubsystems;
-using Unity.Collections;
+
+// Enum for ARKit/ARCore joint indices (expanded to include all joints from BodyTrackingController)
+public enum JointIndices3D
+{
+    Hips = 0,
+    Spine1 = 1,
+    Neck1 = 20,
+    Head = 21,
+    LeftShoulder = 2,
+    LeftUpperArm = 3,
+    LeftLowerArm = 4,
+    LeftHand = 5,
+    RightShoulder = 6,
+    RightUpperArm = 7,
+    RightLowerArm = 8,
+    RightHand = 9,
+    LeftUpperLeg = 10,
+    LeftLowerLeg = 11,
+    LeftFoot = 12,
+    RightUpperLeg = 13,
+    RightLowerLeg = 14,
+    RightFoot = 15
+}
 
 [RequireComponent(typeof(ARHumanBodyManager))]
-public class BodyTrackingController : MonoBehaviour
+public class HumanBodyTracking : MonoBehaviour
 {
     [Header("References")]
-    public Animator avatarAnimator; // Your rigged model's Animator
+    [SerializeField]
+    [Tooltip("The ARHumanBodyManager which will produce frame events.")]
+    private ARHumanBodyManager humanBodyManager;
 
-    ARHumanBodyManager humanBodyManager;
+    [SerializeField]
+    [Tooltip("The Animator component of the rigged avatar.")]
+    private Animator avatarAnimator;
 
     [Header("Smoothing")]
-    public float positionLerpSpeed = 5f;
-    public float rotationLerpSpeed = 5f;
+    [SerializeField]
+    private float positionLerpSpeed = 5f;
+    [SerializeField]
+    private float rotationLerpSpeed = 5f;
 
-    // === ARKit joint index mapping ===
-    const int HIPS = 0;
-    const int SPINE1 = 1;
-    const int NECK1 = 20;
-    const int HEAD = 21;
+    // Cache bone transforms for performance
+    private Dictionary<HumanBodyBones, Transform> boneCache;
 
-    const int LEFT_SHOULDER = 2;
-    const int LEFT_UPPER_ARM = 3;
-    const int LEFT_LOWER_ARM = 4;
-    const int LEFT_HAND = 5;
-
-    const int RIGHT_SHOULDER = 6;
-    const int RIGHT_UPPER_ARM = 7;
-    const int RIGHT_LOWER_ARM = 8;
-    const int RIGHT_HAND = 9;
-
-    const int LEFT_UPPER_LEG = 10;
-    const int LEFT_LOWER_LEG = 11;
-    const int LEFT_FOOT = 12;
-
-    const int RIGHT_UPPER_LEG = 13;
-    const int RIGHT_LOWER_LEG = 14;
-    const int RIGHT_FOOT = 15;
+    // Mapping from AR joint indices to Unity HumanBodyBones
+    private readonly Dictionary<JointIndices3D, HumanBodyBones> jointToBoneMap = new Dictionary<JointIndices3D, HumanBodyBones>
+    {
+        { JointIndices3D.Hips, HumanBodyBones.Hips },
+        { JointIndices3D.Spine1, HumanBodyBones.Spine },
+        { JointIndices3D.Neck1, HumanBodyBones.Neck },
+        { JointIndices3D.Head, HumanBodyBones.Head },
+        { JointIndices3D.LeftShoulder, HumanBodyBones.LeftShoulder },
+        { JointIndices3D.LeftUpperArm, HumanBodyBones.LeftUpperArm },
+        { JointIndices3D.LeftLowerArm, HumanBodyBones.LeftLowerArm },
+        { JointIndices3D.LeftHand, HumanBodyBones.LeftHand },
+        { JointIndices3D.RightShoulder, HumanBodyBones.RightShoulder },
+        { JointIndices3D.RightUpperArm, HumanBodyBones.RightUpperArm },
+        { JointIndices3D.RightLowerArm, HumanBodyBones.RightLowerArm },
+        { JointIndices3D.RightHand, HumanBodyBones.RightHand },
+        { JointIndices3D.LeftUpperLeg, HumanBodyBones.LeftUpperLeg },
+        { JointIndices3D.LeftLowerLeg, HumanBodyBones.LeftLowerLeg },
+        { JointIndices3D.LeftFoot, HumanBodyBones.LeftFoot },
+        { JointIndices3D.RightUpperLeg, HumanBodyBones.RightUpperLeg },
+        { JointIndices3D.RightLowerLeg, HumanBodyBones.RightLowerLeg },
+        { JointIndices3D.RightFoot, HumanBodyBones.RightFoot }
+    };
 
     void Awake()
     {
+        // Initialize humanBodyManager
         humanBodyManager = GetComponent<ARHumanBodyManager>();
+        if (humanBodyManager == null)
+        {
+            Debug.LogError("ARHumanBodyManager component is missing!", this);
+            enabled = false;
+            return;
+        }
+
+        // Validate avatarAnimator
+        if (avatarAnimator == null)
+        {
+            Debug.LogError("Avatar Animator is not assigned!", this);
+            enabled = false;
+            return;
+        }
+
+        // Cache bone transforms
+        boneCache = new Dictionary<HumanBodyBones, Transform>();
+        foreach (var joint in jointToBoneMap)
+        {
+            Transform boneTransform = avatarAnimator.GetBoneTransform(joint.Value);
+            if (boneTransform != null)
+            {
+                boneCache[joint.Value] = boneTransform;
+            }
+            else
+            {
+                Debug.LogWarning($"Bone {joint.Value} not found in Animator!", this);
+            }
+        }
     }
 
     void OnEnable()
     {
-        humanBodyManager.humanBodiesChanged += OnHumanBodiesChanged;
+        if (humanBodyManager != null)
+        {
+            humanBodyManager.humanBodiesChanged += OnHumanBodiesChanged;
+        }
     }
 
     void OnDisable()
     {
-        humanBodyManager.humanBodiesChanged -= OnHumanBodiesChanged;
-    }
-
-    void OnHumanBodiesChanged(ARHumanBodiesChangedEventArgs args)
-    {
-        foreach (var body in args.added)
+        if (humanBodyManager != null)
         {
-            UpdateAvatar(body);
-        }
-
-        foreach (var body in args.updated)
-        {
-            UpdateAvatar(body);
+            humanBodyManager.humanBodiesChanged -= OnHumanBodiesChanged;
         }
     }
 
-    void UpdateAvatar(ARHumanBody body)
+    void OnHumanBodiesChanged(ARHumanBodiesChangedEventArgs eventArgs)
     {
-        if (body == null || body.trackingState != TrackingState.Tracking)
+        foreach (ARHumanBody humanBody in eventArgs.added)
+        {
+            UpdateBody(humanBody);
+        }
+
+        foreach (ARHumanBody humanBody in eventArgs.updated)
+        {
+            UpdateBody(humanBody);
+        }
+    }
+
+    void UpdateBody(ARHumanBody body)
+    {
+        if (body == null || (body.trackingState != TrackingState.Tracking && body.trackingState != TrackingState.Limited) || !body.joints.IsCreated)
+        {
             return;
+        }
 
         NativeArray<XRHumanBodyJoint> joints = body.joints;
 
-        // Hips and spine
-        MapJointToBone(joints, HIPS, HumanBodyBones.Hips);
-        MapJointToBone(joints, SPINE1, HumanBodyBones.Spine);
+        // Update avatar's root transform to match hips
+        if (joints[(int)JointIndices3D.Hips].tracked)
+        {
+            float positionLerp = 1f - Mathf.Exp(-positionLerpSpeed * Time.deltaTime);
+            float rotationLerp = 1f - Mathf.Exp(-rotationLerpSpeed * Time.deltaTime);
+            transform.position = Vector3.Lerp(transform.position, joints[(int)JointIndices3D.Hips].anchorPose.position, positionLerp);
+            transform.rotation = Quaternion.Slerp(transform.rotation, joints[(int)JointIndices3D.Hips].anchorPose.rotation, rotationLerp);
+        }
 
-        // Neck and head
-        MapJointToBone(joints, NECK1, HumanBodyBones.Neck);
-        MapJointToBone(joints, HEAD, HumanBodyBones.Head);
-
-        // Left arm
-        MapJointToBone(joints, LEFT_SHOULDER, HumanBodyBones.LeftShoulder);
-        MapJointToBone(joints, LEFT_UPPER_ARM, HumanBodyBones.LeftUpperArm);
-        MapJointToBone(joints, LEFT_LOWER_ARM, HumanBodyBones.LeftLowerArm);
-        MapJointToBone(joints, LEFT_HAND, HumanBodyBones.LeftHand);
-
-        // Right arm
-        MapJointToBone(joints, RIGHT_SHOULDER, HumanBodyBones.RightShoulder);
-        MapJointToBone(joints, RIGHT_UPPER_ARM, HumanBodyBones.RightUpperArm);
-        MapJointToBone(joints, RIGHT_LOWER_ARM, HumanBodyBones.RightLowerArm);
-        MapJointToBone(joints, RIGHT_HAND, HumanBodyBones.RightHand);
-
-        // Left leg
-        MapJointToBone(joints, LEFT_UPPER_LEG, HumanBodyBones.LeftUpperLeg);
-        MapJointToBone(joints, LEFT_LOWER_LEG, HumanBodyBones.LeftLowerLeg);
-        MapJointToBone(joints, LEFT_FOOT, HumanBodyBones.LeftFoot);
-
-        // Right leg
-        MapJointToBone(joints, RIGHT_UPPER_LEG, HumanBodyBones.RightUpperLeg);
-        MapJointToBone(joints, RIGHT_LOWER_LEG, HumanBodyBones.RightLowerLeg);
-        MapJointToBone(joints, RIGHT_FOOT, HumanBodyBones.RightFoot);
+        // Update each bone based on AR joint data
+        foreach (var joint in jointToBoneMap)
+        {
+            MapJointToBone(joints, (int)joint.Key, joint.Value);
+        }
     }
 
     void MapJointToBone(NativeArray<XRHumanBodyJoint> joints, int jointIndex, HumanBodyBones unityBone)
     {
-        if (jointIndex < 0 || jointIndex >= joints.Length)
+        if (jointIndex < 0 || jointIndex >= joints.Length || !joints[jointIndex].tracked)
+        {
             return;
+        }
+
+        if (!boneCache.TryGetValue(unityBone, out Transform bone))
+        {
+            return;
+        }
 
         XRHumanBodyJoint arJoint = joints[jointIndex];
-
-        if (!arJoint.tracked)
-            return;
-
-        Transform bone = avatarAnimator.GetBoneTransform(unityBone);
-
-        if (bone == null)
-            return;
-
         Vector3 targetPosition = arJoint.anchorPose.position;
         Quaternion targetRotation = arJoint.anchorPose.rotation;
 
-        // Smooth position/rotation (world space)
-        bone.position = Vector3.Lerp(bone.position, targetPosition, Time.deltaTime * positionLerpSpeed);
-        bone.rotation = Quaternion.Slerp(bone.rotation, targetRotation, Time.deltaTime * rotationLerpSpeed);
+        // Apply smoothed transformations
+        float positionLerp = 1f - Mathf.Exp(-positionLerpSpeed * Time.deltaTime);
+        float rotationLerp = 1f - Mathf.Exp(-rotationLerpSpeed * Time.deltaTime);
+        bone.position = Vector3.Lerp(bone.position, targetPosition, positionLerp);
+        bone.rotation = Quaternion.Slerp(bone.rotation, targetRotation, rotationLerp);
     }
 }
