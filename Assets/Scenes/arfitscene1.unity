@@ -153,6 +153,7 @@ MonoBehaviour:
   m_Script: {fileID: 11500000, guid: e7e73985b7ec5fe4889b0a6e335f5c43, type: 3}
   m_Name: 
   m_EditorClassIdentifier: 
+  humanBodyManager: {fileID: 0}
   avatarAnimator: {fileID: 1807383913}
   positionLerpSpeed: 5
   rotationLerpSpeed: 5
@@ -669,7 +670,7 @@ MonoBehaviour:
   m_LightEstimationMode: -1
   m_AutoFocus: 1
   m_LightEstimation: 0
-  m_FacingDirection: 1
+  m_FacingDirection: 2
   m_RenderMode: 0
 --- !u!81 &1732951773
 AudioListener:
