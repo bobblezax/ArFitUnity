@@ -6,11 +6,10 @@ Before you begin, ensure the following are installed:
 
 Unity Hub with Unity 2022.3.x LTS
 
-Android Build Support (or iOS Build Support, if targeting iOS)
 
 AR Foundation package (via Unity Package Manager)
 
-ARKit XR Plugin (for iOS) or ARCore XR Plugin (for Android)
+ARKit XR Plugin (for iOS)
 
 A compatible device that supports body tracking:
 
